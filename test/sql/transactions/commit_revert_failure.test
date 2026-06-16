@@ -1,0 +1,76 @@
+# name: test/sql/transactions/commit_revert_failure.test
+# description: Test recovery when a transaction commit fails, and when reverting that commit also fails
+# group: [transactions]
+
+# This test forces a commit (and revert) to fail, which deliberately leaves the database in an
+# undefined/invalidated state. Skip restart-based configs (the explicit transaction cannot span
+# per-statement restarts) and the alternative-verify build (destroyed unpinned blocks crash the
+# forced revert path).
+require no_alternative_verify
+
+require skip_reload
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+# --- commit fails, but RevertCommit succeeds: the error is reported and the database stays usable ---
+
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (2);
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure=false;
+
+# the failed transaction was reverted - only the original row remains
+query I
+SELECT count(*) FROM t
+----
+1
+
+# the database is still usable after a reverted commit
+statement ok
+INSERT INTO t VALUES (3);
+
+query I
+SELECT count(*) FROM t
+----
+2
+
+# --- commit fails AND RevertCommit also fails: the database is invalidated instead of crashing ---
+
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok
+SET debug_force_commit_revert_failure=true;
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t VALUES (4);
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+# the failing revert left the database in an undefined state - it is now invalidated
+statement error
+SELECT count(*) FROM t
+----
+database has been invalidated
